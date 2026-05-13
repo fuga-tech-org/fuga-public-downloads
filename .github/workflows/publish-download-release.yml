@@ -119,38 +119,21 @@ jobs:
             echo "${RELEASE_NOTES}"
           } > "$BODY_FILE"
 
-          release_json="$(gh api "repos/${REPO}/releases/tags/${RELEASE_TAG}" 2>/dev/null || true)"
-
-          if [ -n "$release_json" ]; then
-            release_id="$(echo "$release_json" | jq -r '.id')"
-            gh api \
-              --method PATCH \
-              -H "Accept: application/vnd.github+json" \
-              "repos/${REPO}/releases/${release_id}" \
-              -f tag_name="${RELEASE_TAG}" \
-              -f name="${RELEASE_NAME}" \
-              -F prerelease=false \
-              -F generate_release_notes=false \
-              -F "body=@${BODY_FILE}" >/dev/null
+          if gh release view "${RELEASE_TAG}" --repo "${REPO}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" \
+              --repo "${REPO}" \
+              --title "${RELEASE_NAME}" \
+              --notes-file "$BODY_FILE" \
+              --latest
           else
-            gh api \
-              --method POST \
-              -H "Accept: application/vnd.github+json" \
-              "repos/${REPO}/releases" \
-              -f tag_name="${RELEASE_TAG}" \
-              -f name="${RELEASE_NAME}" \
-              -F prerelease=false \
-              -F generate_release_notes=false \
-              -F "body=@${BODY_FILE}" >/dev/null
-            release_json="$(gh api "repos/${REPO}/releases/tags/${RELEASE_TAG}")"
-          fi
-
-          existing_asset_id="$(echo "$release_json" | jq -r --arg N "$FILE_NAME" '.assets[]? | select(.name==$N) | .id' || true)"
-          if [ -n "$existing_asset_id" ] && [ "$existing_asset_id" != "null" ]; then
-            gh api --method DELETE "repos/${REPO}/releases/assets/${existing_asset_id}" >/dev/null
+            gh release create "${RELEASE_TAG}" \
+              --repo "${REPO}" \
+              --title "${RELEASE_NAME}" \
+              --notes-file "$BODY_FILE"
           fi
 
           gh release upload "${RELEASE_TAG}" "${FILE_PATH}" --repo "${REPO}" --clobber
+
 
 
 
