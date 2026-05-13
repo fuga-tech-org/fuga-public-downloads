@@ -44,9 +44,19 @@ jobs:
             FILE_NAME="$LEGACY_ZXP"
           fi
 
-          # If no explicit path, default to product folder
+          # If no explicit path, resolve by filename generically across the repo.
+          # If multiple files share the same name, require explicit file_path in payload.
           if [ -z "$FILE_PATH" ] && [ -n "$FILE_NAME" ]; then
-            FILE_PATH="${PRODUCT}/${FILE_NAME}"
+            mapfile -t matches < <(find . -type f -name "$FILE_NAME" -print)
+            if [ "${#matches[@]}" -eq 1 ]; then
+              FILE_PATH="${matches[0]#./}"
+            elif [ "${#matches[@]}" -gt 1 ]; then
+              echo "Ambiguous file_name '$FILE_NAME'. Provide client_payload.file_path explicitly."
+              printf 'Matches:\n%s\n' "${matches[@]}"
+              exit 1
+            else
+              FILE_PATH="${PRODUCT}/${FILE_NAME}"
+            fi
           fi
 
           test -n "$FILE_NAME"
@@ -141,3 +151,5 @@ jobs:
           fi
 
           gh release upload "${RELEASE_TAG}" "${FILE_PATH}" --repo "${REPO}" --clobber
+
+
