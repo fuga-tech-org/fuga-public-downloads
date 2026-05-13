@@ -1,0 +1,143 @@
+﻿name: Publish Download Release
+
+on:
+  repository_dispatch:
+    types: [publish_download_release]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout public repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate payload and resolve paths
+        id: payload
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PRODUCT='${{ github.event.client_payload.product }}'
+          VERSION='${{ github.event.client_payload.version }}'
+          SOURCE_TAG='${{ github.event.client_payload.source_tag }}'
+          SOURCE_REPOSITORY='${{ github.event.client_payload.source_repository }}'
+          SOURCE_RELEASE_URL='${{ github.event.client_payload.source_release_url }}'
+          DOWNLOAD_URL='${{ github.event.client_payload.public_download_url }}'
+          RELEASE_NOTES='${{ github.event.client_payload.release_notes }}'
+
+          FILE_NAME='${{ github.event.client_payload.file_name }}'
+          FILE_PATH='${{ github.event.client_payload.file_path }}'
+          LEGACY_ZXP='${{ github.event.client_payload.zxp_file_name }}'
+
+          # Required fields
+          test -n "$PRODUCT"
+          test -n "$VERSION"
+
+          # Backward compatibility: allow zxp_file_name
+          if [ -z "$FILE_NAME" ] && [ -n "$LEGACY_ZXP" ]; then
+            FILE_NAME="$LEGACY_ZXP"
+          fi
+
+          # If no explicit path, default to product folder
+          if [ -z "$FILE_PATH" ] && [ -n "$FILE_NAME" ]; then
+            FILE_PATH="${PRODUCT}/${FILE_NAME}"
+          fi
+
+          test -n "$FILE_NAME"
+          test -n "$FILE_PATH"
+
+          # Strict validation (safety)
+          [[ "$PRODUCT" =~ ^[a-z0-9._-]+$ ]] || { echo "Invalid product"; exit 1; }
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version"; exit 1; }
+          [[ "$FILE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid file_name"; exit 1; }
+
+          # Path safety: must be relative, no traversal, no backslashes
+          [[ "$FILE_PATH" != /* ]] || { echo "Absolute path not allowed"; exit 1; }
+          [[ "$FILE_PATH" != *".."* ]] || { echo "Path traversal not allowed"; exit 1; }
+          [[ "$FILE_PATH" != *"\\"* ]] || { echo "Backslashes not allowed"; exit 1; }
+
+          # Ensure target file exists in this repo (already mirrored by source repo workflow)
+          [ -f "$FILE_PATH" ] || { echo "File not found in repo: $FILE_PATH"; exit 1; }
+
+          RELEASE_TAG="${PRODUCT}-v${VERSION}"
+          RELEASE_NAME="${PRODUCT}-v${VERSION}"
+
+          {
+            echo "release_tag=$RELEASE_TAG"
+            echo "release_name=$RELEASE_NAME"
+            echo "file_name=$FILE_NAME"
+            echo "file_path=$FILE_PATH"
+            echo "source_tag=$SOURCE_TAG"
+            echo "source_repository=$SOURCE_REPOSITORY"
+            echo "source_release_url=$SOURCE_RELEASE_URL"
+            echo "download_url=$DOWNLOAD_URL"
+            echo "release_notes<<EOF"
+            echo "$RELEASE_NOTES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create/update release and upload asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.payload.outputs.release_tag }}
+          RELEASE_NAME: ${{ steps.payload.outputs.release_name }}
+          FILE_NAME: ${{ steps.payload.outputs.file_name }}
+          FILE_PATH: ${{ steps.payload.outputs.file_path }}
+          SOURCE_TAG: ${{ steps.payload.outputs.source_tag }}
+          SOURCE_REPOSITORY: ${{ steps.payload.outputs.source_repository }}
+          SOURCE_RELEASE_URL: ${{ steps.payload.outputs.source_release_url }}
+          DOWNLOAD_URL: ${{ steps.payload.outputs.download_url }}
+          RELEASE_NOTES: ${{ steps.payload.outputs.release_notes }}
+        run: |
+          set -euo pipefail
+
+          BODY_FILE="$(mktemp)"
+          {
+            echo "Source repository: ${SOURCE_REPOSITORY}"
+            [ -n "${SOURCE_TAG}" ] && echo "Source tag: ${SOURCE_TAG}"
+            [ -n "${SOURCE_RELEASE_URL}" ] && echo "Source release: ${SOURCE_RELEASE_URL}"
+            [ -n "${DOWNLOAD_URL}" ] && echo "Download URL: ${DOWNLOAD_URL}"
+            echo
+            echo "${RELEASE_NOTES}"
+          } > "$BODY_FILE"
+
+          release_json="$(gh api "repos/${REPO}/releases/tags/${RELEASE_TAG}" 2>/dev/null || true)"
+
+          if [ -n "$release_json" ]; then
+            release_id="$(echo "$release_json" | jq -r '.id')"
+            gh api \
+              --method PATCH \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${REPO}/releases/${release_id}" \
+              -f tag_name="${RELEASE_TAG}" \
+              -f name="${RELEASE_NAME}" \
+              -F prerelease=false \
+              -F generate_release_notes=false \
+              -F body@"${BODY_FILE}" >/dev/null
+          else
+            gh api \
+              --method POST \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${REPO}/releases" \
+              -f tag_name="${RELEASE_TAG}" \
+              -f name="${RELEASE_NAME}" \
+              -F prerelease=false \
+              -F generate_release_notes=false \
+              -F body@"${BODY_FILE}" >/dev/null
+            release_json="$(gh api "repos/${REPO}/releases/tags/${RELEASE_TAG}")"
+          fi
+
+          existing_asset_id="$(echo "$release_json" | jq -r --arg N "$FILE_NAME" '.assets[]? | select(.name==$N) | .id' || true)"
+          if [ -n "$existing_asset_id" ] && [ "$existing_asset_id" != "null" ]; then
+            gh api --method DELETE "repos/${REPO}/releases/assets/${existing_asset_id}" >/dev/null
+          fi
+
+          gh release upload "${RELEASE_TAG}" "${FILE_PATH}" --repo "${REPO}" --clobber
