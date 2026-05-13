@@ -119,20 +119,28 @@ jobs:
             echo "${RELEASE_NOTES}"
           } > "$BODY_FILE"
 
+          echo "Publishing release in ${REPO} tag ${RELEASE_TAG} asset ${FILE_PATH}"
+
           if gh release view "${RELEASE_TAG}" --repo "${REPO}" >/dev/null 2>&1; then
             gh release edit "${RELEASE_TAG}" \
               --repo "${REPO}" \
               --title "${RELEASE_NAME}" \
-              --notes-file "$BODY_FILE" \
-              --latest
+              --notes-file "$BODY_FILE"
           else
             gh release create "${RELEASE_TAG}" \
               --repo "${REPO}" \
               --title "${RELEASE_NAME}" \
-              --notes-file "$BODY_FILE"
+              --notes-file "$BODY_FILE" || {
+                # In rare race/consistency cases, retry as edit if release was created by a parallel run.
+                gh release edit "${RELEASE_TAG}" \
+                  --repo "${REPO}" \
+                  --title "${RELEASE_NAME}" \
+                  --notes-file "$BODY_FILE"
+              }
           fi
 
           gh release upload "${RELEASE_TAG}" "${FILE_PATH}" --repo "${REPO}" --clobber
+
 
 
 
