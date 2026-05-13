@@ -95,7 +95,7 @@ jobs:
       - name: Create/update release and upload asset
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PUBLIC_REPO_RELEASE_TOKEN }}
           REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ steps.payload.outputs.release_tag }}
           RELEASE_NAME: ${{ steps.payload.outputs.release_name }}
@@ -158,6 +158,7 @@ jobs:
             fi
             sleep 2
           done
+
 
 
 
