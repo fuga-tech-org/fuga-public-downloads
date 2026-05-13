@@ -102,7 +102,6 @@ jobs:
           BODY_FILE="$(mktemp)"
           {
             echo "Product release: ${RELEASE_NAME}"
-            echo "Source repository: ${SOURCE_REPOSITORY}"
             [ -n "${SOURCE_TAG}" ] && echo "Source tag: ${SOURCE_TAG}"
             [ -n "${DOWNLOAD_URL}" ] && echo "Download URL: ${DOWNLOAD_URL}"
             echo "File: ${FILE_PATH}"
