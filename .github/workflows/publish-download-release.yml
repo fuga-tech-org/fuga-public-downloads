@@ -131,7 +131,7 @@ jobs:
               -f name="${RELEASE_NAME}" \
               -F prerelease=false \
               -F generate_release_notes=false \
-              -F body@"${BODY_FILE}" >/dev/null
+              -F "body=@${BODY_FILE}" >/dev/null
           else
             gh api \
               --method POST \
@@ -141,7 +141,7 @@ jobs:
               -f name="${RELEASE_NAME}" \
               -F prerelease=false \
               -F generate_release_notes=false \
-              -F body@"${BODY_FILE}" >/dev/null
+              -F "body=@${BODY_FILE}" >/dev/null
             release_json="$(gh api "repos/${REPO}/releases/tags/${RELEASE_TAG}")"
           fi
 
@@ -151,5 +151,6 @@ jobs:
           fi
 
           gh release upload "${RELEASE_TAG}" "${FILE_PATH}" --repo "${REPO}" --clobber
+
 
 
