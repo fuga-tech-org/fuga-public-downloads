@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   publish:
@@ -27,25 +28,17 @@ jobs:
           VERSION='${{ github.event.client_payload.version }}'
           SOURCE_TAG='${{ github.event.client_payload.source_tag }}'
           SOURCE_REPOSITORY='${{ github.event.client_payload.source_repository }}'
-          SOURCE_RELEASE_URL='${{ github.event.client_payload.source_release_url }}'
           DOWNLOAD_URL='${{ github.event.client_payload.public_download_url }}'
           RELEASE_NOTES='${{ github.event.client_payload.release_notes }}'
 
           FILE_NAME='${{ github.event.client_payload.file_name }}'
           FILE_PATH='${{ github.event.client_payload.file_path }}'
-          LEGACY_ZXP='${{ github.event.client_payload.zxp_file_name }}'
 
-          # Required fields
           test -n "$PRODUCT"
           test -n "$VERSION"
 
-          # Backward compatibility: allow zxp_file_name
-          if [ -z "$FILE_NAME" ] && [ -n "$LEGACY_ZXP" ]; then
-            FILE_NAME="$LEGACY_ZXP"
-          fi
 
-          # If no explicit path, resolve by filename generically across the repo.
-          # If multiple files share the same name, require explicit file_path in payload.
+
           if [ -z "$FILE_PATH" ] && [ -n "$FILE_NAME" ]; then
             mapfile -t matches < <(find . -type f -name "$FILE_NAME" -print)
             if [ "${#matches[@]}" -eq 1 ]; then
@@ -62,17 +55,14 @@ jobs:
           test -n "$FILE_NAME"
           test -n "$FILE_PATH"
 
-          # Strict validation (safety)
           [[ "$PRODUCT" =~ ^[a-z0-9._-]+$ ]] || { echo "Invalid product"; exit 1; }
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version"; exit 1; }
           [[ "$FILE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid file_name"; exit 1; }
 
-          # Path safety: must be relative, no traversal, no backslashes
           [[ "$FILE_PATH" != /* ]] || { echo "Absolute path not allowed"; exit 1; }
           [[ "$FILE_PATH" != *".."* ]] || { echo "Path traversal not allowed"; exit 1; }
           [[ "$FILE_PATH" != *"\\"* ]] || { echo "Backslashes not allowed"; exit 1; }
 
-          # Ensure target file exists in this repo (already mirrored by source repo workflow)
           [ -f "$FILE_PATH" ] || { echo "File not found in repo: $FILE_PATH"; exit 1; }
 
           RELEASE_TAG="${PRODUCT}-v${VERSION}"
@@ -85,83 +75,42 @@ jobs:
             echo "file_path=$FILE_PATH"
             echo "source_tag=$SOURCE_TAG"
             echo "source_repository=$SOURCE_REPOSITORY"
-            echo "source_release_url=$SOURCE_RELEASE_URL"
             echo "download_url=$DOWNLOAD_URL"
             echo "release_notes<<EOF"
             echo "$RELEASE_NOTES"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Create/update release and upload asset
+      - name: Create/update release announcement issue
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PUBLIC_REPO_RELEASE_TOKEN }}
           REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ steps.payload.outputs.release_tag }}
           RELEASE_NAME: ${{ steps.payload.outputs.release_name }}
-          FILE_NAME: ${{ steps.payload.outputs.file_name }}
           FILE_PATH: ${{ steps.payload.outputs.file_path }}
           SOURCE_TAG: ${{ steps.payload.outputs.source_tag }}
           SOURCE_REPOSITORY: ${{ steps.payload.outputs.source_repository }}
-          SOURCE_RELEASE_URL: ${{ steps.payload.outputs.source_release_url }}
           DOWNLOAD_URL: ${{ steps.payload.outputs.download_url }}
           RELEASE_NOTES: ${{ steps.payload.outputs.release_notes }}
         run: |
           set -euo pipefail
 
+          TITLE="[Release] ${RELEASE_NAME}"
           BODY_FILE="$(mktemp)"
           {
+            echo "Product release: ${RELEASE_NAME}"
             echo "Source repository: ${SOURCE_REPOSITORY}"
             [ -n "${SOURCE_TAG}" ] && echo "Source tag: ${SOURCE_TAG}"
-            [ -n "${SOURCE_RELEASE_URL}" ] && echo "Source release: ${SOURCE_RELEASE_URL}"
             [ -n "${DOWNLOAD_URL}" ] && echo "Download URL: ${DOWNLOAD_URL}"
+            echo "File: ${FILE_PATH}"
             echo
             echo "${RELEASE_NOTES}"
           } > "$BODY_FILE"
 
-          echo "Publishing release in ${REPO} tag ${RELEASE_TAG} asset ${FILE_PATH}"
+          ISSUE_NUMBER="$(gh issue list --repo "${REPO}" --state open --search "${TITLE} in:title" --json number,title --jq 'map(select(.title=="'"${TITLE}"'"))[0].number' || true)"
 
-          if gh release view "${RELEASE_TAG}" --repo "${REPO}" >/dev/null 2>&1; then
-            gh release edit "${RELEASE_TAG}" \
-              --repo "${REPO}" \
-              --title "${RELEASE_NAME}" \
-              --notes-file "$BODY_FILE"
+          if [ -n "${ISSUE_NUMBER}" ] && [ "${ISSUE_NUMBER}" != "null" ]; then
+            gh issue edit "${ISSUE_NUMBER}" --repo "${REPO}" --title "${TITLE}" --body-file "$BODY_FILE" >/dev/null
           else
-            gh release create "${RELEASE_TAG}" \
-              --repo "${REPO}" \
-              --title "${RELEASE_NAME}" \
-              --notes-file "$BODY_FILE" || {
-                # In rare race/consistency cases, retry as edit if release was created by a parallel run.
-                gh release edit "${RELEASE_TAG}" \
-                  --repo "${REPO}" \
-                  --title "${RELEASE_NAME}" \
-                  --notes-file "$BODY_FILE"
-              }
+            gh issue create --repo "${REPO}" --title "${TITLE}" --body-file "$BODY_FILE" >/dev/null
           fi
-
-          # Wait until GitHub release index is consistent for this tag
-          for i in {1..10}; do
-            if gh release view "${RELEASE_TAG}" --repo "${REPO}" >/dev/null 2>&1; then
-              break
-            fi
-            sleep 2
-          done
-
-          # Upload asset with retry to avoid transient 404 right after create/edit
-          for i in {1..5}; do
-            if gh release upload "${RELEASE_TAG}" "${FILE_PATH}" --repo "${REPO}" --clobber; then
-              break
-            fi
-            if [ "$i" -eq 5 ]; then
-              echo "Upload failed after retries"
-              exit 1
-            fi
-            sleep 2
-          done
-
-
-
-
-
-
-
