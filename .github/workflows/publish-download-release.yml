@@ -5,8 +5,8 @@ on:
     types: [publish_download_release]
 
 permissions:
-  contents: write
-  issues: write
+  contents: read
+  discussions: write
 
 jobs:
   publish:
@@ -30,16 +30,16 @@ jobs:
           SOURCE_REPOSITORY='${{ github.event.client_payload.source_repository }}'
           DOWNLOAD_URL='${{ github.event.client_payload.public_download_url }}'
           RELEASE_NOTES='${{ github.event.client_payload.release_notes }}'
+          DISCUSSION_CATEGORY='${{ github.event.client_payload.discussion_category }}'
 
           FILE_NAME='${{ github.event.client_payload.file_name }}'
           FILE_PATH='${{ github.event.client_payload.file_path }}'
 
           test -n "$PRODUCT"
           test -n "$VERSION"
+          test -n "$FILE_NAME"
 
-
-
-          if [ -z "$FILE_PATH" ] && [ -n "$FILE_NAME" ]; then
+          if [ -z "$FILE_PATH" ]; then
             mapfile -t matches < <(find . -type f -name "$FILE_NAME" -print)
             if [ "${#matches[@]}" -eq 1 ]; then
               FILE_PATH="${matches[0]#./}"
@@ -52,9 +52,6 @@ jobs:
             fi
           fi
 
-          test -n "$FILE_NAME"
-          test -n "$FILE_PATH"
-
           [[ "$PRODUCT" =~ ^[a-z0-9._-]+$ ]] || { echo "Invalid product"; exit 1; }
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version"; exit 1; }
           [[ "$FILE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid file_name"; exit 1; }
@@ -65,23 +62,25 @@ jobs:
 
           [ -f "$FILE_PATH" ] || { echo "File not found in repo: $FILE_PATH"; exit 1; }
 
-          RELEASE_TAG="${PRODUCT}-v${VERSION}"
           RELEASE_NAME="${PRODUCT}-v${VERSION}"
+          if [ -z "$DISCUSSION_CATEGORY" ]; then
+            DISCUSSION_CATEGORY="Releases"
+          fi
 
           {
-            echo "release_tag=$RELEASE_TAG"
             echo "release_name=$RELEASE_NAME"
             echo "file_name=$FILE_NAME"
             echo "file_path=$FILE_PATH"
             echo "source_tag=$SOURCE_TAG"
             echo "source_repository=$SOURCE_REPOSITORY"
             echo "download_url=$DOWNLOAD_URL"
+            echo "discussion_category=$DISCUSSION_CATEGORY"
             echo "release_notes<<EOF"
             echo "$RELEASE_NOTES"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Create/update release announcement issue
+      - name: Create release announcement discussion
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PUBLIC_REPO_RELEASE_TOKEN }}
@@ -92,10 +91,14 @@ jobs:
           SOURCE_REPOSITORY: ${{ steps.payload.outputs.source_repository }}
           DOWNLOAD_URL: ${{ steps.payload.outputs.download_url }}
           RELEASE_NOTES: ${{ steps.payload.outputs.release_notes }}
+          DISCUSSION_CATEGORY: ${{ steps.payload.outputs.discussion_category }}
         run: |
           set -euo pipefail
 
+          OWNER="${REPO%%/*}"
+          NAME="${REPO##*/}"
           TITLE="[Release] ${RELEASE_NAME}"
+
           BODY_FILE="$(mktemp)"
           {
             echo "Product release: ${RELEASE_NAME}"
@@ -107,10 +110,23 @@ jobs:
             echo "${RELEASE_NOTES}"
           } > "$BODY_FILE"
 
-          ISSUE_NUMBER="$(gh issue list --repo "${REPO}" --state open --search "${TITLE} in:title" --json number,title --jq 'map(select(.title=="'"${TITLE}"'"))[0].number' || true)"
+          REPO_DATA="$(gh api graphql -f query='query($owner:String!, $name:String!){ repository(owner:$owner, name:$name){ id discussionCategories(first:50){ nodes { id name } } } }' -F owner="$OWNER" -F name="$NAME")"
 
-          if [ -n "${ISSUE_NUMBER}" ] && [ "${ISSUE_NUMBER}" != "null" ]; then
-            gh issue edit "${ISSUE_NUMBER}" --repo "${REPO}" --title "${TITLE}" --body-file "$BODY_FILE" >/dev/null
-          else
-            gh issue create --repo "${REPO}" --title "${TITLE}" --body-file "$BODY_FILE" >/dev/null
+          REPO_ID="$(echo "$REPO_DATA" | jq -r '.data.repository.id')"
+          CATEGORY_ID="$(echo "$REPO_DATA" | jq -r --arg N "$DISCUSSION_CATEGORY" '.data.repository.discussionCategories.nodes[] | select(.name==$N) | .id' | head -n1)"
+
+          if [ -z "$CATEGORY_ID" ]; then
+            echo "Discussion category '$DISCUSSION_CATEGORY' not found in ${REPO}."
+            echo "Available categories:"
+            echo "$REPO_DATA" | jq -r '.data.repository.discussionCategories.nodes[].name'
+            exit 1
           fi
+
+          BODY="$(cat "$BODY_FILE")"
+          gh api graphql \
+            -f query='mutation($repoId:ID!, $categoryId:ID!, $title:String!, $body:String!){ createDiscussion(input:{repositoryId:$repoId, categoryId:$categoryId, title:$title, body:$body}) { discussion { url } } }' \
+            -F repoId="$REPO_ID" \
+            -F categoryId="$CATEGORY_ID" \
+            -F title="$TITLE" \
+            -F body="$BODY" >/dev/null
+
