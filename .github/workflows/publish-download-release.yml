@@ -139,7 +139,26 @@ jobs:
               }
           fi
 
-          gh release upload "${RELEASE_TAG}" "${FILE_PATH}" --repo "${REPO}" --clobber
+          # Wait until GitHub release index is consistent for this tag
+          for i in {1..10}; do
+            if gh release view "${RELEASE_TAG}" --repo "${REPO}" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
+          # Upload asset with retry to avoid transient 404 right after create/edit
+          for i in {1..5}; do
+            if gh release upload "${RELEASE_TAG}" "${FILE_PATH}" --repo "${REPO}" --clobber; then
+              break
+            fi
+            if [ "$i" -eq 5 ]; then
+              echo "Upload failed after retries"
+              exit 1
+            fi
+            sleep 2
+          done
+
 
 
 
