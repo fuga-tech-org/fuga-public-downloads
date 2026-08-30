@@ -26,6 +26,7 @@ jobs:
 
           PRODUCT='${{ github.event.client_payload.product }}'
           VERSION='${{ github.event.client_payload.version }}'
+          ENVIRONMENT='${{ github.event.client_payload.environment }}'
           SOURCE_TAG='${{ github.event.client_payload.source_tag }}'
           SOURCE_REPOSITORY='${{ github.event.client_payload.source_repository }}'
           DOWNLOAD_URL='${{ github.event.client_payload.public_download_url }}'
@@ -56,19 +57,27 @@ jobs:
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version"; exit 1; }
           [[ "$FILE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid file_name"; exit 1; }
 
+          if [ -z "$ENVIRONMENT" ]; then
+            ENVIRONMENT="${SOURCE_TAG%%-v*}"
+          fi
+          [[ "$ENVIRONMENT" =~ ^(dev|staging|prod)$ ]] || { echo "Invalid environment: $ENVIRONMENT"; exit 1; }
+
           [[ "$FILE_PATH" != /* ]] || { echo "Absolute path not allowed"; exit 1; }
           [[ "$FILE_PATH" != *".."* ]] || { echo "Path traversal not allowed"; exit 1; }
           [[ "$FILE_PATH" != *"\\"* ]] || { echo "Backslashes not allowed"; exit 1; }
 
           [ -f "$FILE_PATH" ] || { echo "File not found in repo: $FILE_PATH"; exit 1; }
 
-          RELEASE_NAME="${PRODUCT}-v${VERSION}"
+          RELEASE_NAME="${PRODUCT}-${ENVIRONMENT}-v${VERSION}"
+          DISPLAY_NAME="${PRODUCT} v${VERSION}"
           if [ -z "$DISCUSSION_CATEGORY" ]; then
             DISCUSSION_CATEGORY="Releases"
           fi
 
           {
             echo "release_name=$RELEASE_NAME"
+            echo "display_name=$DISPLAY_NAME"
+            echo "environment=$ENVIRONMENT"
             echo "file_name=$FILE_NAME"
             echo "file_path=$FILE_PATH"
             echo "source_tag=$SOURCE_TAG"
@@ -86,6 +95,8 @@ jobs:
           GH_TOKEN: ${{ secrets.PUBLIC_REPO_RELEASE_TOKEN }}
           REPO: ${{ github.repository }}
           RELEASE_NAME: ${{ steps.payload.outputs.release_name }}
+          DISPLAY_NAME: ${{ steps.payload.outputs.display_name }}
+          ENVIRONMENT: ${{ steps.payload.outputs.environment }}
           FILE_PATH: ${{ steps.payload.outputs.file_path }}
           SOURCE_TAG: ${{ steps.payload.outputs.source_tag }}
           SOURCE_REPOSITORY: ${{ steps.payload.outputs.source_repository }}
@@ -97,11 +108,11 @@ jobs:
 
           OWNER="${REPO%%/*}"
           NAME="${REPO##*/}"
-          TITLE="[Release] ${RELEASE_NAME}"
+          TITLE="[Release] [${ENVIRONMENT}] ${DISPLAY_NAME}"
 
           BODY_FILE="$(mktemp)"
           {
-            echo "Product release: ${RELEASE_NAME}"
+            echo "Product release - ${RELEASE_NAME}"
             [ -n "${SOURCE_TAG}" ] && echo "Source tag: ${SOURCE_TAG}"
             [ -n "${DOWNLOAD_URL}" ] && echo "Download URL: ${DOWNLOAD_URL}"
             echo "File: ${FILE_PATH}"
