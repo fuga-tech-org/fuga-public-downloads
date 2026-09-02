@@ -133,10 +133,16 @@ jobs:
           fi
 
           BODY="$(cat "$BODY_FILE")"
-          gh api graphql \
+          CREATE_RESULT="$(gh api graphql \
             -f query='mutation($repoId:ID!, $categoryId:ID!, $title:String!, $body:String!){ createDiscussion(input:{repositoryId:$repoId, categoryId:$categoryId, title:$title, body:$body}) { discussion { url } } }' \
             -F repoId="$REPO_ID" \
             -F categoryId="$CATEGORY_ID" \
             -F title="$TITLE" \
-            -F body="$BODY" >/dev/null
+            -F body="$BODY")"
+          DISCUSSION_URL="$(echo "$CREATE_RESULT" | jq -r '.data.createDiscussion.discussion.url // empty')"
+          if [ -z "$DISCUSSION_URL" ]; then
+            echo "Discussion was not created. GitHub response: $CREATE_RESULT"
+            exit 1
+          fi
+          echo "Created release announcement: $DISCUSSION_URL"
 
